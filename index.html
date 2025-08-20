@@ -150,8 +150,7 @@
 </body>
 
 <script>
-    function spring2D(initial, target, config = {}, onRest = () => {
-    }) {
+    function spring2D(initial, target, config = {}, onRest = () => {}) {
         const {
             mass = 1,
             tension = 170,
@@ -159,9 +158,11 @@
             precision = 0.01
         } = config;
 
-        let pos = {...initial};   // 当前位移 {x, y}
-        let vel = {x: 0, y: 0};  // 当前速度
+        let pos = { ...initial };   // 当前位移 {x, y}
+        let vel = { x: 0, y: 0 };  // 当前速度
         let running = true;
+        let prevTime = performance.now();
+        let accumulatedTime = 0;
 
         function step(dt, position, velocity, target) {
             const force = -tension * (position - target);
@@ -179,18 +180,48 @@
         function animate() {
             if (!running) return;
 
-            const dt = 1 / 60; // 每帧时间步长
+            const nowTime = performance.now();
+            let dtMs = nowTime - prevTime;
+            prevTime = nowTime;
+            accumulatedTime += dtMs;
 
-            [pos.x, vel.x] = step(dt, pos.x, vel.x, target.x);
-            [pos.y, vel.y] = step(dt, pos.y, vel.y, target.y);
-            
+            const msPerFrame = 1000 / 60;
+
+            // 避免跳帧过大
+            if (accumulatedTime > msPerFrame * 10) accumulatedTime = msPerFrame;
+
+            // 计算整帧 + 亚帧比例
+            const frames = Math.floor(accumulatedTime / msPerFrame);
+            const remainder = (accumulatedTime % msPerFrame) / msPerFrame;
+
+            let tempPos = { ...pos };
+            let tempVel = { ...vel };
+
+            // 整帧 step
+            for (let i = 0; i < frames; i++) {
+                [tempPos.x, tempVel.x] = step(msPerFrame / 1000, tempPos.x, tempVel.x, target.x);
+                [tempPos.y, tempVel.y] = step(msPerFrame / 1000, tempPos.y, tempVel.y, target.y);
+            }
+
+            // 下一帧 step 用于插值
+            const [nextX, nextVX] = step(msPerFrame / 1000, tempPos.x, tempVel.x, target.x);
+            const [nextY, nextVY] = step(msPerFrame / 1000, tempPos.y, tempVel.y, target.y);
+
+            // 亚帧插值
+            pos.x = tempPos.x + (nextX - tempPos.x) * remainder;
+            pos.y = tempPos.y + (nextY - tempPos.y) * remainder;
+
+            vel.x = tempVel.x + (nextVX - tempVel.x) * remainder;
+            vel.y = tempVel.y + (nextVY - tempVel.y) * remainder;
+
+            accumulatedTime -= frames * msPerFrame;
 
             const doneX = vel.x === 0 && pos.x === target.x;
             const doneY = vel.y === 0 && pos.y === target.y;
 
             if (doneX && doneY) {
                 running = false;
-                onRest(pos);
+                onRest({ ...pos });
                 return;
             }
 
@@ -201,17 +232,20 @@
 
         return {
             setTarget(newTarget) {
-                target = {...target, ...newTarget};
+                target = { ...target, ...newTarget };
                 if (!running) {
                     running = true;
+                    prevTime = performance.now();
+                    accumulatedTime = 0;
                     requestAnimationFrame(animate);
                 }
             },
             get value() {
-                return {...pos};
+                return { ...pos };
             }
         };
     }
+
 
     class EyePart {
         constructor(selector) {
@@ -220,34 +254,16 @@
             this.eyeWhite = root.querySelector(".eye-white")
             this.eyeball = root.querySelector(".eyeball")
             this.closeEye = root.querySelector(".close-eye")
-            this.state = {x: 0, y: 0, targetX: 0, targetY: 0}
-            this.spring = null // 保存弹簧实例
-        }
-
-        homing() {
-            // 创建弹簧，从当前位置回到 {0,0}
+            this.state = { x: 0, y: 0 }
             this.spring = spring2D(
-                    {x: this.state.targetX, y: this.state.targetY},
-                    {x: 0, y: 0},
-                    {mass: 1, tension: 170, friction: 26, precision: 0.001},
+                    { x: 0, y: 0 },          // 初始位置
+                    { x: 0, y: 0 },          // 目标位置
+                    { mass: 1, tension: 170, friction: 26, precision: 0.001 },
                     (final) => {
-                        if (!this.spring) return
-                        // 动画结束后保证完全归零
-                        this.state.x = 0
-                        this.state.y = 0
+                        this.state.x = final.x
+                        this.state.y = final.y
                     }
             )
-
-            const animate = () => {
-                if (!this.spring) return
-                const {x, y} = this.spring.value
-                this.state.x = x
-                this.state.y = y
-                this.eyeball.style.translate =
-                        `calc(12px * ${x}) calc(10px * ${y})`
-                if (x !== 0 || y !== 0) requestAnimationFrame(animate)
-            }
-            animate()
         }
 
         setTarget(mouseX, mouseY) {
@@ -257,18 +273,19 @@
             const x = Math.min(1, Math.max(-1, (mouseX - cx) / 150))
             const y = Math.min(1, Math.max(-1, (mouseY - cy) / 100))
 
-            // 停掉任何现有弹簧动画
-            this.spring = null
-
-            this.state.targetX = x
-            this.state.targetY = y
+            this.spring.setTarget({ x, y })
         }
 
-        update(ease = 0.1) {
-            this.state.x += (this.state.targetX - this.state.x) * ease
-            this.state.y += (this.state.targetY - this.state.y) * ease
-            this.eyeball.style.translate =
-                    `calc(12px * ${this.state.x}) calc(10px * ${this.state.y})`
+        homing() {
+            this.spring.setTarget({ x: 0, y: 0 })
+        }
+
+        update() {
+            const { x, y } = this.spring.value
+            this.state.x = x
+            this.state.y = y
+            this.eyeball.style.translate = `calc(12px * ${x}) calc(10px * ${y})`
+            requestAnimationFrame(() => this.update())
         }
 
         toggle() {
@@ -277,6 +294,7 @@
             this.closeEye.classList.toggle("hide")
         }
     }
+
 
     class EyeController {
         constructor() {
