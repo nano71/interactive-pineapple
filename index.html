@@ -285,7 +285,6 @@
             this.state.x = x
             this.state.y = y
             this.eyeball.style.translate = `calc(12px * ${x}) calc(10px * ${y})`
-            requestAnimationFrame(() => this.update())
         }
 
         toggle() {
